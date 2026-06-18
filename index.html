@@ -2904,7 +2904,13 @@ function App() {
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [apiErr, setApiErr] = useState(null);
-  const [apiKey, setApiKey] = useState(localStorage.getItem("anthropic_key") || "");
+  const [apiKey, setApiKey] = useState(() => {
+    try {
+      return localStorage.getItem("anthropic_key") || "";
+    } catch (e) {
+      return "";
+    }
+  });
   const [sel, setSel] = useState(null);
   const [stake, setStake] = useState("normal");
   const [pred, setPred] = useState(null);
@@ -3082,29 +3088,8 @@ function App() {
     let cotes = {},
       lineupH = null,
       lineupA = null;
-    if (apiKey.trim().length > 8) {
-      addLog("② API-Football…");
-      const today = sel.date?.slice(0, 10) || new Date().toISOString().slice(0, 10);
-      const fix = await apif(`fixtures?league=1&season=2026&date=${today}`, apiKey);
-      if (fix?.response?.length) {
-        const match = fix.response.find(f => (f.teams.home.name.includes(sel.home) || sel.home.includes(f.teams.home.name)) && (f.teams.away.name.includes(sel.away) || sel.away.includes(f.teams.away.name)));
-        if (match) {
-          const fid = match.fixture.id;
-          const [lu, od] = await Promise.all([apif(`fixtures/lineups?fixture=${fid}`, apiKey), apif(`odds?fixture=${fid}&bookmaker=8`, apiKey)]);
-          if (lu?.response?.length) {
-            lineupH = lu.response.find(t => t.team.name.includes(sel.home));
-            lineupA = lu.response.find(t => t.team.name.includes(sel.away));
-          }
-          const b = od?.response?.[0]?.bookmakers?.[0]?.bets?.find(b => b.name === "Match Winner");
-          b?.values?.forEach(v => {
-            if (v.value === "Home") cotes.home = +v.odd;
-            if (v.value === "Draw") cotes.draw = +v.odd;
-            if (v.value === "Away") cotes.away = +v.odd;
-          });
-          if (cotes.home) addLog(`② Cotes: 1=${cotes.home} X=${cotes.draw} 2=${cotes.away}`);
-        }
-      }
-    }
+    // API-Football desactive
+
     const sMod = stake === "low" ? 0.88 : stake === "decider" ? 0.82 : 1.0;
     const {
       lH,
@@ -3149,7 +3134,7 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": apiKey,
+          "x-api-key": anthropicKey,
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-ipc": "true"
         },
@@ -4177,7 +4162,7 @@ function Setup({
   }, "Anthropic API -- Analyse IA"), /*#__PURE__*/React.createElement("input", {
     style: S.keyInput,
     type: "password",
-    placeholder: "sk-ant-...",
+    placeholder: "Cle API Anthropic...",
     value: apiKey,
     onChange: e => {
       setApiKey(e.target.value);
@@ -4191,13 +4176,13 @@ function Setup({
     style: {
       color: C.green
     }
-  }, "console.anthropic.com/api-keys"), " -- creer une cle", /*#__PURE__*/React.createElement("br", null), "2. Coller la cle sk-ant-... ci-dessus", /*#__PURE__*/React.createElement("br", null), "3. Sans cle: predictions mathematiques 100% operationnelles")), /*#__PURE__*/React.createElement("div", {
+  }, "console.anthropic.com/api-keys"), " -- creer une cle", /*#__PURE__*/React.createElement("br", null), "2. Coller la cle ci-dessus", /*#__PURE__*/React.createElement("br", null), "3. Sans cle: predictions mathematiques 100% operationnelles")), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "12px 0",
       fontSize: "12px",
       color: C.muted
     }
-  }, apiKey && apiKey.startsWith("sk-ant-") ? /*#__PURE__*/React.createElement("span", {
+  }, apiKey && apiKey.length > 20 ? /*#__PURE__*/React.createElement("span", {
     style: {
       color: C.green
     }
@@ -4205,7 +4190,7 @@ function Setup({
     style: {
       color: C.gold
     }
-  }, "Entrez votre cle sk-ant-... pour activer l analyse IA")));
+  }, "Entrez votre cle Anthropic pour activer l analyse IA")));
 }
 
     ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
