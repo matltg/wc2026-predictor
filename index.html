@@ -321,7 +321,9 @@ function(a,b,c){if(!Vd(b))throw Error(n(200));return Wd(null,a,b,!1,c)};Q.unmoun
   <script>
     const { useState, useEffect, useCallback } = React;
 
-import { jsxDEV as _jsxDEV, Fragment as _Fragment } from "react/jsx-dev-runtime";
+// Remplacement du système d'import pour éviter le crash
+const _Fragment = React.Fragment;
+const _jsxDEV = (type, props, key) => React.createElement(type, { ...props, key }, props?.children);
 /* ═══════════════════════════════════════════════════════════════
    DESIGN TOKENS
    ═══════════════════════════════════════════════════════════════ */
@@ -1598,11 +1600,13 @@ async function fetchWx(venue, date) {
     return null;
   }
 }
-const CF_PROXY = "https://wc2026-proxy.mat-leotoing.workers.dev";
+// Appels directs à API-Football sans Cloudflare
 async function apif(ep, key) {
   try {
-    const target = encodeURIComponent(`https://v3.football.api-sports.io/${ep}`);
-    const r = await fetch(`${CF_PROXY}?url=${target}&apikey=${key}`);
+    const r = await fetch(`https://v3.football.api-sports.io/${ep}`, {
+      method: 'GET',
+      headers: { 'x-apisports-key': key }
+    });
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -2983,15 +2987,17 @@ function App() {
         }
       };
 
-      // ── SOURCE 1 : API-Football via Cloudflare proxy ──
+// ── SOURCE 1 : API-Football en direct (GitHub Pages) ──
       try {
-        addLog("Chargement API-Football…");
+        addLog("Chargement API-Football (Direct)…");
         const AF_KEY = "209aac3aaffd8d9e1e2e1a48190dccd0";
         const afUrl = `https://v3.football.api-sports.io/fixtures?league=1&season=2026`;
-        const proxyUrl = `${CF_PROXY}?url=${encodeURIComponent(afUrl)}&apikey=${AF_KEY}`;
-        addLog(`Appel proxy: ${proxyUrl.slice(0, 80)}…`);
-        const afResp = await fetch(proxyUrl);
-        addLog(`Réponse proxy: HTTP ${afResp.status}`);
+        
+        const afResp = await fetch(afUrl, {
+          method: 'GET',
+          headers: { 'x-apisports-key': AF_KEY }
+        });
+        addLog(`Réponse API: HTTP ${afResp.status}`);
         if (!afResp.ok) throw new Error(`HTTP ${afResp.status}`);
         const afData = await afResp.json();
         addLog(`JSON reçu: ${JSON.stringify(afData).slice(0, 120)}`);
@@ -3016,12 +3022,12 @@ function App() {
         addLog(`⚠ API-Football échoué: ${e1.message}`);
       }
 
-      // ── SOURCE 2 : worldcup26.ir via Cloudflare proxy ──
+// ── SOURCE 2 : worldcup26.ir en direct ──
       try {
-        addLog("Tentative worldcup26.ir…");
+        addLog("Tentative worldcup26.ir (Direct)…");
         const wcUrl = `https://worldcup26.ir/get/games`;
-        const wcResp = await fetch(`${CF_PROXY}?url=${encodeURIComponent(wcUrl)}`);
-        addLog(`worldcup26.ir proxy: HTTP ${wcResp.status}`);
+        const wcResp = await fetch(wcUrl);
+        addLog(`worldcup26.ir API: HTTP ${wcResp.status}`);
         if (!wcResp.ok) throw new Error(`HTTP ${wcResp.status}`);
         const d = await wcResp.json();
         const raw = Array.isArray(d) ? d : d.games || d.matches || [];
