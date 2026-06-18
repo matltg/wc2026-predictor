@@ -1407,10 +1407,11 @@ function deriveAll(m, home, away) {
   lines.sort((x, y) => y.p - x.p);
 
   // Score families
-  const famHome = [1, 2, 3].reduce((s, g) => {
-    const sub = [0, 1, 2].map(a => m[g]?.[a] || 0).reduce((a, b) => a + b, 0);
-    return s + sub;
-  }, 0);
+ const famHome = [1, 2, 3].reduce((s, g) => {
+  if (!m || !m[g]) return s; // Sécurité si la ligne de la matrice n'existe pas
+  const sub = [0, 1, 2].map(a => (m[g] && m[g][a]) ? m[g][a] : 0).reduce((a, b) => a + b, 0);
+  return s + sub;
+}, 0);
   // Result + OU combos
   const combos = [{
     label: `${home} & Over 1.5`,
