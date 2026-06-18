@@ -2924,6 +2924,7 @@ function App() {
       // Helper: normalize match list + compute ELO
       const processMatches = (list, src) => {
         setMatches(list);
+        setLoading(false);
         addLog(`✅ ${list.length} matchs chargés (${src})`);
         const played = list.filter(m => m.homeScore !== null && m.awayScore !== null);
         if (played.length > 0) {
@@ -3273,14 +3274,14 @@ En 4 phrases: (1) analyse tactique, (2) meilleur pari avec chiffres, (3) Over/Un
     onClick: () => setTab(k)
   }, l))), apiErr && /*#__PURE__*/React.createElement("div", {
     style: S.err
-  }, "⚠ ", apiErr), loading && /*#__PURE__*/React.createElement("div", {
+  }, "⚠ ", apiErr), loading && matches.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: "24px",
       color: C.muted,
       fontSize: "13px"
     }
-  }, "Chargement + calcul ELO…"), tab === "matches" && !loading && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "Chargement + calcul ELO…"), tab === "matches" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       position: "sticky",
       top: 0,
