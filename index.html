@@ -2960,48 +2960,23 @@ function App() {
         }
       };
 
-      // ── SOURCE 1 : API-Football via Cloudflare proxy ──
-      try {
-        addLog("Chargement API-Football…");
-        const AF_KEY = "209aac3aaffd8d9e1e2e1a48190dccd0";
-        const afUrl = `https://v3.football.api-sports.io/fixtures?league=1&season=2026`;
-        const proxyUrl = `${CF_PROXY}?url=${encodeURIComponent(afUrl)}&apikey=${AF_KEY}`;
-        addLog(`Appel proxy: ${proxyUrl.slice(0, 80)}…`);
-        const afResp = await fetch(proxyUrl);
-        addLog(`Réponse proxy: HTTP ${afResp.status}`);
-        if (!afResp.ok) throw new Error(`HTTP ${afResp.status}`);
-        const afData = await afResp.json();
-        addLog(`JSON reçu: ${JSON.stringify(afData).slice(0, 120)}`);
-        if (afData?.errors?.requests) throw new Error("quota dépassé: " + JSON.stringify(afData.errors));
-        const raw = afData?.response || [];
-        if (!raw.length) throw new Error(`response vide — full: ${JSON.stringify(afData).slice(0, 200)}`);
-        const list = raw.map((m, i) => ({
-          id: m.fixture?.id || i,
-          home: m.teams?.home?.name || "TBD",
-          away: m.teams?.away?.name || "TBD",
-          date: m.fixture?.date?.slice(0, 10) || "",
-          time: m.fixture?.date?.slice(11, 16) || "",
-          group: m.league?.round || "",
-          venue: m.fixture?.venue?.city || "Default",
-          status: m.fixture?.status?.short || "NS",
-          homeScore: m.goals?.home ?? null,
-          awayScore: m.goals?.away ?? null
-        }));
-        processMatches(list, "API-Football");
-        return;
-      } catch (e1) {
-        addLog(`⚠ API-Football échoué: ${e1.message}`);
-      }
-
       // ── SOURCE 2 : worldcup26.ir via Cloudflare proxy ──
       try {
         addLog("Tentative worldcup26.ir...");
         const BASE = "https://worldcup26.ir";
         const ctrl = new AbortController();
-        setTimeout(() => ctrl.abort(), 12000);
+        setTimeout(() => ctrl.abort(), 20000);
+        const ctrl2 = new AbortController();
+        setTimeout(() => ctrl2.abort(), 20000);
+        const ctrl3 = new AbortController();
+        setTimeout(() => ctrl3.abort(), 20000);
         const [rG, rT, rS] = await Promise.all([fetch(`${CF_PROXY}?url=${encodeURIComponent(BASE + "/get/games")}`, {
           signal: ctrl.signal
-        }), fetch(`${CF_PROXY}?url=${encodeURIComponent(BASE + "/get/teams")}`), fetch(`${CF_PROXY}?url=${encodeURIComponent(BASE + "/get/stadiums")}`)]);
+        }), fetch(`${CF_PROXY}?url=${encodeURIComponent(BASE + "/get/teams")}`, {
+          signal: ctrl2.signal
+        }), fetch(`${CF_PROXY}?url=${encodeURIComponent(BASE + "/get/stadiums")}`, {
+          signal: ctrl3.signal
+        })]);
         addLog(`worldcup26.ir: HTTP ${rG.status}`);
         if (!rG.ok) throw new Error(`HTTP ${rG.status}`);
         const d = await rG.json();
