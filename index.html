@@ -2904,7 +2904,7 @@ function App() {
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [apiErr, setApiErr] = useState(null);
-  const [apiKey, setApiKey] = useState("209aac3aaffd8d9e1e2e1a48190dccd0");
+  const [apiKey, setApiKey] = useState(localStorage.getItem("anthropic_key") || "");
   const [sel, setSel] = useState(null);
   const [stake, setStake] = useState("normal");
   const [pred, setPred] = useState(null);
@@ -3148,7 +3148,10 @@ function App() {
       const r = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-ipc": "true"
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
@@ -4167,51 +4170,42 @@ function Setup({
 }) {
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: S.info
-  }, "Configure ta clé API-Football pour compositions, cotes et value bets en temps réel."), /*#__PURE__*/React.createElement("div", {
+  }, "Configure ta cle API Anthropic pour activer l analyse IA apres chaque prediction."), /*#__PURE__*/React.createElement("div", {
     style: S.keyBox
   }, /*#__PURE__*/React.createElement("div", {
     style: S.keyTitle
-  }, "API-Football — 100 req/jour gratuit"), /*#__PURE__*/React.createElement("input", {
+  }, "Anthropic API -- Analyse IA"), /*#__PURE__*/React.createElement("input", {
     style: S.keyInput,
     type: "password",
-    placeholder: "Clé API…",
+    placeholder: "sk-ant-...",
     value: apiKey,
-    onChange: e => setApiKey(e.target.value)
+    onChange: e => {
+      setApiKey(e.target.value);
+      try {
+        localStorage.setItem("anthropic_key", e.target.value);
+      } catch (ex) {}
+    }
   }), /*#__PURE__*/React.createElement("div", {
     style: S.keyHint
   }, "1. ", /*#__PURE__*/React.createElement("strong", {
     style: {
       color: C.green
     }
-  }, "dashboard.api-football.com"), " → compte gratuit (sans CB)", /*#__PURE__*/React.createElement("br", null), "2. Dashboard → API Key → copier")), /*#__PURE__*/React.createElement("div", {
-    style: S.keyBox
-  }, /*#__PURE__*/React.createElement("div", {
-    style: S.keyTitle
-  }, "Système d'étoiles ⭐ — Logique"), /*#__PURE__*/React.createElement("div", {
+  }, "console.anthropic.com/api-keys"), " -- creer une cle", /*#__PURE__*/React.createElement("br", null), "2. Coller la cle sk-ant-... ci-dessus", /*#__PURE__*/React.createElement("br", null), "3. Sans cle: predictions mathematiques 100% operationnelles")), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: "11px",
-      color: C.muted,
-      lineHeight: 1.8
+      padding: "12px 0",
+      fontSize: "12px",
+      color: C.muted
     }
-  }, [["⭐⭐⭐⭐⭐", "≥ 72%", "Très haute confiance — jouer en confiance"], ["⭐⭐⭐⭐", "62–71%", "Haute confiance — pari recommandé"], ["⭐⭐⭐", "52–61%", "Confiance modérée — pari possible"], ["⭐⭐", "42–51%", "Faible confiance — prudence"], ["⭐", "< 42%", "Spéculatif — éviter"]].map(([s, r, l]) => /*#__PURE__*/React.createElement("div", {
-    key: s,
+  }, apiKey && apiKey.startsWith("sk-ant-") ? /*#__PURE__*/React.createElement("span", {
     style: {
-      display: "flex",
-      gap: "8px",
-      alignItems: "baseline",
-      marginBottom: "2px"
+      color: C.green
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, "Cle Anthropic configuree -- analyse IA active") : /*#__PURE__*/React.createElement("span", {
     style: {
-      minWidth: "80px",
-      fontSize: "12px"
-    }
-  }, s), /*#__PURE__*/React.createElement("span", {
-    style: {
-      minWidth: "56px",
       color: C.gold
     }
-  }, r), /*#__PURE__*/React.createElement("span", null, l))), /*#__PURE__*/React.createElement("br", null), "Score = prob × fiabilité marché × bonus edge bookmaker")));
+  }, "Entrez votre cle sk-ant-... pour activer l analyse IA")));
 }
 
     ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
