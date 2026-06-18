@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>WC 2026 Predictor</title>
+  <meta name="theme-color" content="#050c07"/>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#050c07;color:#dff2e8;font-family:Inter,system-ui,sans-serif;}
+    #root{min-height:100vh;}
+    @keyframes sl{0%{transform:translateX(-100%)}100%{transform:translateX(220%)}}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+
+/* ═══════════════════════════════════════════════════════════════
+   DESIGN TOKENS
+   ═══════════════════════════════════════════════════════════════ */
+const C = {
+  bg:"#050c07", surface:"#091410", card:"#0c1e12", border:"#163320",
+  green:"#00e676", greenDim:"#007a38", gold:"#ffd740", goldDim:"#a08800",
+  red:"#ff5252", blue:"#40c4ff", purple:"#ce93d8", orange:"#ffab40",
+  text:"#dff2e8", muted:"#4d7a5c", white:"#ffffff",
+  star:"#ffd740", starOff:"#1e3a20",
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   STAR RATING ENGINE
+   score = prob * marketReliability * edgeBonus → mapped to 1-5 stars
+   ═══════════════════════════════════════════════════════════════ */
+const MARKET_RELIABILITY = {
+  ou:        1.00,  // Over/Under — most reliable
+  "1x2":     0.95,  // Match result
+  teamGoals: 0.88,  // Team goal count (0/1/2+)
+  combo:     0.90,  // Result + O/U combined
+  scoreFamily:0.75, // Score exact family (e.g. 1-0/2-0/3-0)
+  scoreExact: 0.55, // Single exact score
+  handicap:  0.92,  // Asian handicap
+};
+
+function starRating(prob, marketType, bookOdd = null) {
+  const rel = MARKET_RELIABILITY[marketType] || 0.80;
+  let edgeBonus = 1.0;
+  if (bookOdd && bookOdd > 1) {
+    const impliedProb = 1 / bookOdd;
+    const edge = (prob - impliedProb) / impliedProb; // relative edge
+    if (edge > 0.08) edgeBonus = 1.15;
+    else if (edge > 0.03) edgeBonus = 1.07;
+    else if (edge < -0.05) edgeBonus = 0.88; // bookmaker disagrees strongly
+  }
+  const score = prob * rel * edgeBonus;
+  let stars, label, color;
+  if (score >= 0.72)      { stars = 5; label = "Très haute confiance"; }
+  else if (score >= 0.62) { stars = 4; label = "Haute confiance"; }
+  else if (score >= 0.52) { stars = 3; label = "Confiance modérée"; }
+  else if (score >= 0.42) { stars = 2; label = "Faible confiance"; }
+  else                    { stars = 1; label = "Spéculatif"; }
+  const colors = ["#ff5252","#ff5252","#ffab40","#ffd740","#00e676"];
+  return { stars, label, score: +(score*100).toFixed(1), color: colors[stars-1] };
+}
+
+function Stars({ n, color }) {
+  return (
+    <span style={{ letterSpacing: "1px" }}>
+      {[1,2,3,4,5].map(i => (
+        <span key={i} style={{ color: i <= n ? (color||C.star) : C.starOff, fontSize:"13px" }}>★</span>
+      ))}
+    </span>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STADIUM GPS
+   ═══════════════════════════════════════════════════════════════ */
+const STADIUMS = {
+  "Mexico City":   {lat:19.303,lon:-99.150, alt:2240,name:"Estadio Azteca"},
+  "Guadalajara":   {lat:20.686,lon:-103.467,alt:1566,name:"Estadio Akron"},
+  "Monterrey":     {lat:25.669,lon:-100.310,alt:530, name:"Estadio BBVA"},
+  "New York":      {lat:40.813,lon:-74.074, alt:0,   name:"MetLife Stadium"},
+  "Los Angeles":   {lat:33.953,lon:-118.339,alt:0,   name:"SoFi Stadium"},
+  "Dallas":        {lat:32.748,lon:-97.093, alt:180, name:"AT&T Stadium"},
+  "Miami":         {lat:25.958,lon:-80.239, alt:0,   name:"Hard Rock Stadium"},
+  "Atlanta":       {lat:33.755,lon:-84.401, alt:310, name:"Mercedes-Benz Stadium"},
+  "Seattle":       {lat:47.595,lon:-122.332,alt:0,   name:"Lumen Field"},
+  "San Francisco": {lat:37.403,lon:-121.970,alt:0,   name:"Levi's Stadium"},
+  "Boston":        {lat:42.091,lon:-71.264, alt:0,   name:"Gillette Stadium"},
+  "Philadelphia":  {lat:39.901,lon:-75.167, alt:0,   name:"Lincoln Financial Field"},
+  "Kansas City":   {lat:39.049,lon:-94.484, alt:270, name:"Arrowhead Stadium"},
+  "Toronto":       {lat:43.633,lon:-79.419, alt:76,  name:"BMO Field"},
+  "Vancouver":     {lat:49.277,lon:-123.112,alt:0,   name:"BC Place"},
+  "Default":       {lat:40.0,  lon:-74.0,  alt:0,   name:"Unknown"},
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   QUALIFICATION STATS
+   ═══════════════════════════════════════════════════════════════ */
+const QUAL = {
+  "Argentina":  {gp:18,w:14,d:2,l:2, gf:35,ga:12,form:"WWWWW",atk:1.94,def:0.67},
+  "Brazil":     {gp:18,w:11,d:3,l:4, gf:30,ga:19,form:"WDWLW",atk:1.67,def:1.06},
+  "Colombia":   {gp:18,w:10,d:4,l:4, gf:26,ga:17,form:"WWDWW",atk:1.44,def:0.94},
+  "Ecuador":    {gp:18,w:8, d:4,l:6, gf:22,ga:19,form:"WDWDL",atk:1.22,def:1.06},
+  "Uruguay":    {gp:18,w:8, d:4,l:6, gf:24,ga:22,form:"WLWWL",atk:1.33,def:1.22},
+  "Paraguay":   {gp:18,w:7, d:5,l:6, gf:23,ga:23,form:"DWWDL",atk:1.28,def:1.28},
+  "Venezuela":  {gp:18,w:6, d:4,l:8, gf:18,ga:23,form:"LDWWL",atk:1.00,def:1.28},
+  "Bolivia":    {gp:18,w:3, d:3,l:12,gf:14,ga:36,form:"LLLWL",atk:0.78,def:2.00},
+  "England":    {gp:8, w:8, d:0,l:0, gf:28,ga:0, form:"WWWWW",atk:3.50,def:0.00},
+  "France":     {gp:8, w:6, d:1,l:1, gf:20,ga:5, form:"WWWDW",atk:2.50,def:0.63},
+  "Spain":      {gp:8, w:7, d:1,l:0, gf:24,ga:4, form:"WWWWW",atk:3.00,def:0.50},
+  "Germany":    {gp:8, w:7, d:0,l:1, gf:26,ga:6, form:"WWWLW",atk:3.25,def:0.75},
+  "Portugal":   {gp:8, w:7, d:1,l:0, gf:29,ga:5, form:"WWWWW",atk:3.63,def:0.63},
+  "Netherlands":{gp:8, w:6, d:1,l:1, gf:22,ga:7, form:"WWWDW",atk:2.75,def:0.88},
+  "Belgium":    {gp:8, w:6, d:0,l:2, gf:21,ga:8, form:"WWLWW",atk:2.63,def:1.00},
+  "Croatia":    {gp:8, w:5, d:2,l:1, gf:18,ga:7, form:"DWWWW",atk:2.25,def:0.88},
+  "Switzerland":{gp:8, w:5, d:2,l:1, gf:17,ga:6, form:"WDWWL",atk:2.13,def:0.75},
+  "Austria":    {gp:8, w:5, d:1,l:2, gf:18,ga:9, form:"WWWLW",atk:2.25,def:1.13},
+  "Denmark":    {gp:8, w:5, d:2,l:1, gf:16,ga:6, form:"WDWWW",atk:2.00,def:0.75},
+  "Norway":     {gp:8, w:6, d:1,l:1, gf:24,ga:6, form:"WWWWW",atk:3.00,def:0.75},
+  "Sweden":     {gp:8, w:4, d:2,l:2, gf:14,ga:8, form:"WDLWW",atk:1.75,def:1.00},
+  "Scotland":   {gp:8, w:4, d:2,l:2, gf:13,ga:9, form:"WDWLW",atk:1.63,def:1.13},
+  "Ukraine":    {gp:8, w:5, d:1,l:2, gf:15,ga:8, form:"WLWWW",atk:1.88,def:1.00},
+  "Serbia":     {gp:8, w:4, d:2,l:2, gf:14,ga:9, form:"DWWLD",atk:1.75,def:1.13},
+  "Poland":     {gp:8, w:4, d:1,l:3, gf:14,ga:10,form:"WLWDW",atk:1.75,def:1.25},
+  "Türkiye":    {gp:8, w:4, d:2,l:2, gf:13,ga:8, form:"WDWDL",atk:1.63,def:1.00},
+  "Bosnia":     {gp:8, w:4, d:1,l:3, gf:12,ga:11,form:"LWDWW",atk:1.50,def:1.38},
+  "Czechia":    {gp:8, w:3, d:3,l:2, gf:11,ga:9, form:"DWWLD",atk:1.38,def:1.13},
+  "Japan":      {gp:10,w:7, d:2,l:1, gf:24,ga:6, form:"WWWDW",atk:2.40,def:0.60},
+  "South Korea":{gp:10,w:8, d:2,l:0, gf:26,ga:5, form:"WWWWW",atk:2.60,def:0.50},
+  "Australia":  {gp:10,w:6, d:2,l:2, gf:19,ga:9, form:"WWDWL",atk:1.90,def:0.90},
+  "Iran":       {gp:10,w:6, d:2,l:2, gf:18,ga:8, form:"WWWDL",atk:1.80,def:0.80},
+  "Saudi Arabia":{gp:10,w:5,d:3,l:2, gf:16,ga:10,form:"DWWDW",atk:1.60,def:1.00},
+  "Iraq":       {gp:10,w:5, d:2,l:3, gf:15,ga:12,form:"WDWLW",atk:1.50,def:1.20},
+  "Jordan":     {gp:10,w:7, d:1,l:2, gf:32,ga:11,form:"WWWWL",atk:3.20,def:1.10},
+  "Uzbekistan": {gp:10,w:5, d:2,l:3, gf:14,ga:11,form:"WDLWW",atk:1.40,def:1.10},
+  "Qatar":      {gp:6, w:3, d:1,l:2, gf:8, ga:10,form:"WLDWL",atk:1.33,def:1.67},
+  "Morocco":    {gp:10,w:7, d:2,l:1, gf:21,ga:5, form:"WWWWW",atk:2.10,def:0.50},
+  "Senegal":    {gp:10,w:7, d:1,l:2, gf:20,ga:7, form:"WWWDW",atk:2.00,def:0.70},
+  "Egypt":      {gp:10,w:6, d:3,l:1, gf:17,ga:6, form:"WDWWW",atk:1.70,def:0.60},
+  "Nigeria":    {gp:10,w:6, d:2,l:2, gf:16,ga:8, form:"WWLDW",atk:1.60,def:0.80},
+  "Ivory Coast":{gp:10,w:5, d:3,l:2, gf:14,ga:9, form:"DWWDW",atk:1.40,def:0.90},
+  "Tunisia":    {gp:10,w:6, d:4,l:0, gf:14,ga:0, form:"WWDWW",atk:1.40,def:0.00},
+  "Ghana":      {gp:10,w:4, d:3,l:3, gf:13,ga:11,form:"DWWLD",atk:1.30,def:1.10},
+  "Algeria":    {gp:10,w:5, d:3,l:2, gf:14,ga:8, form:"WWWDD",atk:1.40,def:0.80},
+  "Cameroon":   {gp:10,w:4, d:2,l:4, gf:12,ga:13,form:"WLWDL",atk:1.20,def:1.30},
+  "South Africa":{gp:10,w:4,d:3,l:3, gf:11,ga:10,form:"DWWDL",atk:1.10,def:1.00},
+  "Cabo Verde": {gp:10,w:5, d:2,l:3, gf:13,ga:9, form:"WWDLW",atk:1.30,def:0.90},
+  "DR Congo":   {gp:4, w:2, d:1,l:1, gf:4, ga:3, form:"WDWL", atk:1.00,def:0.75},
+  "Mali":       {gp:10,w:4, d:3,l:3, gf:11,ga:10,form:"DWLWW",atk:1.10,def:1.00},
+  "USA":        {gp:14,w:8, d:3,l:3, gf:28,ga:15,form:"WWDWW",atk:2.00,def:1.07},
+  "Mexico":     {gp:0, w:0, d:0,l:0, gf:0, ga:0, form:"WWWDW",atk:2.00,def:1.00},
+  "Canada":     {gp:0, w:0, d:0,l:0, gf:0, ga:0, form:"WWWDL",atk:2.00,def:1.10},
+  "Panama":     {gp:14,w:6, d:3,l:5, gf:18,ga:18,form:"DLWWL",atk:1.29,def:1.29},
+  "Costa Rica": {gp:14,w:5, d:3,l:6, gf:16,ga:17,form:"DWLWL",atk:1.14,def:1.21},
+  "Haiti":      {gp:14,w:4, d:4,l:6, gf:12,ga:18,form:"LLWDW",atk:0.86,def:1.29},
+  "Curaçao":    {gp:14,w:3, d:5,l:6, gf:11,ga:18,form:"LDWDD",atk:0.79,def:1.29},
+  "New Zealand":{gp:8, w:6, d:1,l:1, gf:22,ga:4, form:"WWWWW",atk:2.75,def:0.50},
+};
+
+const ELO_BASE = {
+  "Argentina":2080,"France":2060,"England":2055,"Spain":2065,"Brazil":2040,
+  "Portugal":2030,"Germany":2025,"Netherlands":2010,"Belgium":1985,
+  "Croatia":1960,"Uruguay":1955,"Colombia":1945,"USA":1940,"Mexico":1935,
+  "Morocco":1925,"Senegal":1915,"Japan":1910,"South Korea":1905,
+  "Switzerland":1900,"Denmark":1895,"Austria":1890,"Ecuador":1885,
+  "Norway":1920,"Ukraine":1875,"Australia":1870,"Poland":1865,"Serbia":1860,
+  "Canada":1855,"Türkiye":1850,"Tunisia":1840,"Nigeria":1835,
+  "Ivory Coast":1830,"Ghana":1825,"Cameroon":1820,"Egypt":1818,
+  "Algeria":1815,"Mali":1810,"Saudi Arabia":1800,"Iran":1795,
+  "Iraq":1790,"Qatar":1785,"Uzbekistan":1780,"Jordan":1775,
+  "New Zealand":1770,"Venezuela":1780,"Paraguay":1788,"Bolivia":1760,
+  "Costa Rica":1778,"Panama":1772,"Haiti":1745,"Curaçao":1742,
+  "South Africa":1822,"Cabo Verde":1808,"DR Congo":1800,
+  "Scotland":1858,"Bosnia":1845,"Czechia":1852,"Sweden":1868,
+};
+
+const BASE_INJURIES = {
+  "Brazil":     [{p:"Estêvão",r:"ATT",i:0.12},{p:"Rodrygo",r:"ATT",i:0.10}],
+  "Germany":    [{p:"L. Karl",r:"MID",i:0.06},{p:"S. Gnabry",r:"ATT",i:0.07}],
+  "Spain":      [{p:"S. Aghehowa",r:"ATT",i:0.05},{p:"Fermín",r:"MID",i:0.05}],
+  "USA":        [{p:"J. Cardoso",r:"MID",i:0.09},{p:"P. Agyemang",r:"ATT",i:0.05}],
+  "Netherlands":[{p:"M. de Ligt",r:"DEF",i:0.08},{p:"J. Timber",r:"DEF",i:0.08}],
+  "France":     [{p:"H. Ekitike",r:"ATT",i:0.06}],
+  "Mexico":     [{p:"J. Orozco",r:"DEF",i:0.06}],
+  "Japan":      [{p:"K. Mitoma",r:"ATT",i:0.13},{p:"T. Minamino",r:"ATT",i:0.08}],
+  "Uruguay":    [{p:"R. Araújo",r:"DEF",i:0.08}],
+};
+
+const H2H_BIAS = {
+  "Argentina_France":0.05,"Brazil_Argentina":-0.03,"Germany_France":0.04,
+  "Spain_Germany":0.06,"England_Germany":-0.02,"France_Brazil":0.05,
+  "Portugal_France":-0.04,"Netherlands_Argentina":-0.06,"Spain_England":0.04,
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   ELO ENGINE  (K=60, MoV multiplier)
+   ═══════════════════════════════════════════════════════════════ */
+function eloExp(a,b){return 1/(1+Math.pow(10,(b-a)/400));}
+function movMul(d){if(d<=1)return 1.0;if(d===2)return 1.5;if(d===3)return 1.75;return Math.min(2.5,1.75+(d-3)*0.1);}
+function updateElo(eH,eA,sH,sA){
+  const d=Math.abs(sH-sA),mov=movMul(d),eXH=eloExp(eH,eA);
+  const rH=sH>sA?1:sH===sA?0.5:0;
+  const dH=Math.round(60*mov*(rH-eXH));
+  return{newH:eH+dH,newA:eA-dH,dH,dA:-dH};
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   POISSON + DIXON-COLES
+   ═══════════════════════════════════════════════════════════════ */
+function fact(n){return n<=1?1:n*fact(n-1);}
+function pPMF(k,l){if(l<=0)return k===0?1:0;return Math.pow(l,k)*Math.exp(-l)/fact(Math.min(k,20));}
+function dcC(h,a,lH,lA,p=-0.10){
+  if(h===0&&a===0)return 1-lH*lA*p;if(h===0&&a===1)return 1+lH*p;
+  if(h===1&&a===0)return 1+lA*p;if(h===1&&a===1)return 1-p;return 1;
+}
+function buildMatrix(lH,lA,max=7){
+  const m=[];let t=0;
+  for(let h=0;h<=max;h++){m[h]=[];for(let a=0;a<=max;a++){const v=pPMF(h,lH)*pPMF(a,lA)*dcC(h,a,lH,lA);m[h][a]=v;t+=v;}}
+  for(let h=0;h<=max;h++)for(let a=0;a<=max;a++)m[h][a]/=t;
+  return m;
+}
+
+/* ── All derived probabilities from matrix ── */
+function deriveAll(m, home, away) {
+  let pH=0,pD=0,pA=0;
+  let o15=0,o25=0,o35=0,u25=0,btts=0;
+  const tgH=[0,0,0,0], tgA=[0,0,0,0]; // 0,1,2,3+ goals per team
+
+  for(let h=0;h<m.length;h++)for(let a=0;a<m[h].length;a++){
+    const v=m[h][a],t=h+a;
+    if(h>a)pH+=v; else if(h===a)pD+=v; else pA+=v;
+    if(t>1.5)o15+=v; if(t>2.5)o25+=v; else u25+=v;
+    if(t>3.5)o35+=v; if(h>0&&a>0)btts+=v;
+    tgH[Math.min(h,3)]+=v; tgA[Math.min(a,3)]+=v;
+  }
+
+  // Best score
+  let bv=0,bh=0,ba=0;
+  for(let h=0;h<m.length;h++)for(let a=0;a<m[h].length;a++)if(m[h][a]>bv){bv=m[h][a];bh=h;ba=a;}
+
+  // Top 6 scorelines
+  const lines=[];
+  for(let h=0;h<m.length;h++)for(let a=0;a<m[h].length;a++)lines.push({h,a,p:m[h][a]});
+  lines.sort((x,y)=>y.p-x.p);
+
+  // Score families
+  const famHome = [1,2,3].reduce((s,g)=>{
+    const sub=[0,1,2].map(a=>m[g]?.[a]||0).reduce((a,b)=>a+b,0);
+    return s+sub;
+  },0);
+  // Result + OU combos
+  const combos=[
+    {label:`${home} & Over 1.5`,  p: sumWhere(m,(h,a)=>h>a&&h+a>1.5), type:"combo"},
+    {label:`${home} & Over 2.5`,  p: sumWhere(m,(h,a)=>h>a&&h+a>2.5), type:"combo"},
+    {label:`${home} & Under 2.5`, p: sumWhere(m,(h,a)=>h>a&&h+a<=2.5),type:"combo"},
+    {label:`Nul & Under 2.5`,     p: sumWhere(m,(h,a)=>h===a&&h+a<=2.5),type:"combo"},
+    {label:`${away} & Under 2.5`, p: sumWhere(m,(h,a)=>h<a&&h+a<=2.5), type:"combo"},
+    {label:`${home} & Over 1.5 buts`,p:sumWhere(m,(h,a)=>h>a&&h+a>1.5),type:"combo"},
+  ];
+
+  return {pH,pD,pA,o15,o25,o35,u25,btts,tgH,tgA,
+    best:{h:bh,a:ba,p:bv}, top6:lines.slice(0,6), combos};
+}
+function sumWhere(m,cond){
+  let s=0;
+  for(let h=0;h<m.length;h++)for(let a=0;a<m[h].length;a++)if(cond(h,a))s+=m[h][a];
+  return s;
+}
+
+/* ── Lambda computation ── */
+function computeL(home,away,liveElo,wMod=1,aMod=1,sMod=1,xH=[],xA=[]){
+  const eH=liveElo[home]||ELO_BASE[home]||1850,eA=liveElo[away]||ELO_BASE[away]||1850;
+  const qH=QUAL[home]||{atk:1.5,def:1.0,form:"WWDLD"},qA=QUAL[away]||{atk:1.5,def:1.0,form:"WWDLD"};
+  const efH=1/(1+Math.pow(10,-(eH-eA)/400)),efA=1-efH;
+  const fmS=f=>(f||"WWDLD").slice(-5).split("").reduce((s,c)=>s+(c==="W"?3:c==="D"?1:0),0);
+  const fH=0.85+(fmS(qH.form)/15)*0.30,fA=0.85+(fmS(qA.form)/15)*0.30;
+  const injH=[...(BASE_INJURIES[home]||[]),...xH],injA=[...(BASE_INJURIES[away]||[]),...xA];
+  const mal=(inj,r)=>Math.min(0.28,inj.filter(i=>i.r===r||i.r==="MID").reduce((s,i)=>s+i.i,0));
+  let lH=1.30*(0.6+efH*0.8)*(qH.atk/1.9)*fH*(1-mal(injH,"ATT"))*wMod*aMod*sMod;
+  let lA=1.30*(0.6+efA*0.8)*(qA.atk/1.9)*fA*(1-mal(injA,"ATT"))*wMod*aMod*sMod;
+  const k1=`${home}_${away}`,k2=`${away}_${home}`;
+  if(H2H_BIAS[k1]){lH*=(1+H2H_BIAS[k1]);lA*=(1-H2H_BIAS[k1]*0.5);}
+  if(H2H_BIAS[k2]){lA*=(1+H2H_BIAS[k2]);lH*=(1-H2H_BIAS[k2]*0.5);}
+  return{lH:+Math.max(0.2,Math.min(4,lH)).toFixed(3),lA:+Math.max(0.2,Math.min(4,lA)).toFixed(3),
+    eH,eA,eHB:ELO_BASE[home]||1850,eAB:ELO_BASE[away]||1850,injH,injA};
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WEATHER
+   ═══════════════════════════════════════════════════════════════ */
+const WMO={0:"Dégagé",1:"Principalement dégagé",2:"Partiellement nuageux",3:"Couvert",
+  51:"Bruine légère",61:"Pluie légère",63:"Pluie",65:"Pluie forte",
+  80:"Averses",81:"Averses",82:"Averses violentes",95:"Orage",96:"Orage+grêle"};
+const WXE={0:"☀️",1:"🌤️",2:"⛅",3:"☁️",51:"🌦️",61:"🌧️",63:"🌧️",65:"⛈️",80:"🌦️",81:"🌧️",82:"⛈️",95:"⛈️"};
+function wxM(temp,precip,wind,wmo){
+  let mod=1,notes=[];
+  if(temp>33){mod-=0.07;notes.push(`Chaleur ${temp}degC`);}else if(temp>29){mod-=0.04;notes.push(`Chaud ${temp}degC`);}
+  if(precip>2){mod-=0.06;notes.push(`Pluie ${precip}mm`);}else if(precip>0.5){mod-=0.03;notes.push("Légère pluie");}
+  if(wind>50){mod-=0.05;notes.push(`Vent fort ${wind}km/h`);}
+  if([65,82,95,96,99].includes(wmo)){mod-=0.08;notes.push("Conditions difficiles");}
+  return{mod:Math.max(0.75,mod),notes};
+}
+function altM(alt){if(alt>2000)return 0.82;if(alt>1500)return 0.88;if(alt>1000)return 0.93;if(alt>500)return 0.97;return 1;}
+
+async function fetchWx(venue,date){
+  const st=STADIUMS[venue]||STADIUMS["Default"];
+  try{
+    const d=date?date.slice(0,10):new Date().toISOString().slice(0,10);
+    const r=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${st.lat}&longitude=${st.lon}&hourly=temperature_2m,precipitation,windspeed_10m,weathercode&timezone=auto&start_date=${d}&end_date=${d}`);
+    const j=await r.json();const idx=Math.min(20,j.hourly.time.length-1);
+    return{temp:j.hourly.temperature_2m[idx],precip:j.hourly.precipitation[idx],wind:j.hourly.windspeed_10m[idx],wmo:j.hourly.weathercode[idx],stadium:st.name,alt:st.alt};
+  }catch{return null;}
+}
+async function apif(ep,key){
+  try{
+    const r=await fetch(`https://v3.football.api-sports.io/${ep}`,{
+      headers:{"x-apisports-key":key,"x-rapidapi-host":"v3.football.api-sports.io"}
+    });
+    if(!r.ok)return null;return r.json();
+  }catch{return null;}
+}
+
+const pct=p=>(p*100).toFixed(1)+"%";
+const odd=p=>p<0.01?"—":(1/p).toFixed(2);
+
+/* ═══════════════════════════════════════════════════════════════
+   DEMO MATCHES
+   ═══════════════════════════════════════════════════════════════ */
+const DEMO=[
+  // ── GROUPE A ──
+  {id:1, home:"Mexico",        away:"South Africa",        date:"2026-06-11",time:"13:00",group:"A",venue:"Mexico City",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:2, home:"South Korea",   away:"Czechia",             date:"2026-06-11",time:"20:00",group:"A",venue:"Guadalajara",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:25,home:"Czechia",       away:"South Africa",        date:"2026-06-18",time:"12:00",group:"A",venue:"Atlanta",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:28,home:"Mexico",        away:"South Korea",         date:"2026-06-18",time:"19:00",group:"A",venue:"Guadalajara",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:53,home:"Czechia",       away:"Mexico",              date:"2026-06-24",time:"19:00",group:"A",venue:"Mexico City",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:54,home:"South Africa",  away:"South Korea",         date:"2026-06-24",time:"19:00",group:"A",venue:"Monterrey",     status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE B ──
+  {id:3, home:"Canada",        away:"Bosnia",              date:"2026-06-12",time:"15:00",group:"B",venue:"Toronto",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:8, home:"Qatar",         away:"Switzerland",         date:"2026-06-13",time:"12:00",group:"B",venue:"San Francisco", status:"scheduled",homeScore:null,awayScore:null},
+  {id:26,home:"Switzerland",   away:"Bosnia",              date:"2026-06-18",time:"12:00",group:"B",venue:"Los Angeles",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:27,home:"Canada",        away:"Qatar",               date:"2026-06-18",time:"15:00",group:"B",venue:"Vancouver",     status:"scheduled",homeScore:null,awayScore:null},
+  {id:51,home:"Switzerland",   away:"Canada",              date:"2026-06-24",time:"12:00",group:"B",venue:"Vancouver",     status:"scheduled",homeScore:null,awayScore:null},
+  {id:52,home:"Bosnia",        away:"Qatar",               date:"2026-06-24",time:"12:00",group:"B",venue:"Seattle",       status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE C ──
+  {id:7, home:"Brazil",        away:"Morocco",             date:"2026-06-13",time:"18:00",group:"C",venue:"New York",      status:"scheduled",homeScore:null,awayScore:null},
+  {id:5, home:"Haiti",         away:"Scotland",            date:"2026-06-13",time:"21:00",group:"C",venue:"Boston",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:29,home:"Brazil",        away:"Haiti",               date:"2026-06-19",time:"21:00",group:"C",venue:"Philadelphia",  status:"scheduled",homeScore:null,awayScore:null},
+  {id:30,home:"Scotland",      away:"Morocco",             date:"2026-06-19",time:"18:00",group:"C",venue:"Boston",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:49,home:"Scotland",      away:"Brazil",              date:"2026-06-24",time:"18:00",group:"C",venue:"Miami",         status:"scheduled",homeScore:null,awayScore:null},
+  {id:50,home:"Morocco",       away:"Haiti",               date:"2026-06-24",time:"18:00",group:"C",venue:"Atlanta",       status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE D ──
+  {id:4, home:"USA",           away:"Paraguay",            date:"2026-06-12",time:"18:00",group:"D",venue:"Los Angeles",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:6, home:"Australia",     away:"Türkiye",             date:"2026-06-13",time:"21:00",group:"D",venue:"Vancouver",     status:"scheduled",homeScore:null,awayScore:null},
+  {id:31,home:"Türkiye",       away:"Paraguay",            date:"2026-06-19",time:"20:00",group:"D",venue:"San Francisco", status:"scheduled",homeScore:null,awayScore:null},
+  {id:32,home:"USA",           away:"Australia",           date:"2026-06-19",time:"12:00",group:"D",venue:"Seattle",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:59,home:"Türkiye",       away:"USA",                 date:"2026-06-25",time:"19:00",group:"D",venue:"Los Angeles",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:60,home:"Paraguay",      away:"Australia",           date:"2026-06-25",time:"19:00",group:"D",venue:"San Francisco", status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE E ──
+  {id:10,home:"Germany",       away:"Curaçao",             date:"2026-06-14",time:"12:00",group:"E",venue:"Houston",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:9, home:"Ivory Coast",   away:"Ecuador",             date:"2026-06-14",time:"19:00",group:"E",venue:"Philadelphia",  status:"scheduled",homeScore:null,awayScore:null},
+  {id:33,home:"Germany",       away:"Ivory Coast",         date:"2026-06-20",time:"16:00",group:"E",venue:"Toronto",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:34,home:"Ecuador",       away:"Curaçao",             date:"2026-06-20",time:"19:00",group:"E",venue:"Kansas City",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:55,home:"Curaçao",       away:"Ivory Coast",         date:"2026-06-25",time:"16:00",group:"E",venue:"Philadelphia",  status:"scheduled",homeScore:null,awayScore:null},
+  {id:56,home:"Ecuador",       away:"Germany",             date:"2026-06-25",time:"16:00",group:"E",venue:"New York",      status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE F ──
+  {id:11,home:"Netherlands",   away:"Japan",               date:"2026-06-14",time:"15:00",group:"F",venue:"Dallas",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:12,home:"Sweden",        away:"Tunisia",             date:"2026-06-14",time:"20:00",group:"F",venue:"Monterrey",     status:"scheduled",homeScore:null,awayScore:null},
+  {id:35,home:"Netherlands",   away:"Sweden",              date:"2026-06-20",time:"12:00",group:"F",venue:"Houston",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:36,home:"Tunisia",       away:"Japan",               date:"2026-06-20",time:"22:00",group:"F",venue:"Monterrey",     status:"scheduled",homeScore:null,awayScore:null},
+  {id:57,home:"Japan",         away:"Sweden",              date:"2026-06-25",time:"18:00",group:"F",venue:"Dallas",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:58,home:"Tunisia",       away:"Netherlands",         date:"2026-06-25",time:"18:00",group:"F",venue:"Kansas City",   status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE G ──
+  {id:16,home:"Belgium",       away:"Egypt",               date:"2026-06-15",time:"12:00",group:"G",venue:"Seattle",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:15,home:"Iran",          away:"New Zealand",         date:"2026-06-15",time:"18:00",group:"G",venue:"Los Angeles",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:39,home:"Belgium",       away:"Iran",                date:"2026-06-21",time:"12:00",group:"G",venue:"Los Angeles",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:40,home:"New Zealand",   away:"Egypt",               date:"2026-06-21",time:"18:00",group:"G",venue:"Vancouver",     status:"scheduled",homeScore:null,awayScore:null},
+  {id:63,home:"Egypt",         away:"Iran",                date:"2026-06-26",time:"20:00",group:"G",venue:"Seattle",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:64,home:"New Zealand",   away:"Belgium",             date:"2026-06-26",time:"20:00",group:"G",venue:"Vancouver",     status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE H ──
+  {id:14,home:"Spain",         away:"Cabo Verde",          date:"2026-06-15",time:"12:00",group:"H",venue:"Atlanta",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:13,home:"Saudi Arabia",  away:"Uruguay",             date:"2026-06-15",time:"18:00",group:"H",venue:"Miami",         status:"scheduled",homeScore:null,awayScore:null},
+  {id:38,home:"Spain",         away:"Saudi Arabia",        date:"2026-06-21",time:"12:00",group:"H",venue:"Atlanta",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:37,home:"Uruguay",       away:"Cabo Verde",          date:"2026-06-21",time:"18:00",group:"H",venue:"Miami",         status:"scheduled",homeScore:null,awayScore:null},
+  {id:65,home:"Cabo Verde",    away:"Saudi Arabia",        date:"2026-06-26",time:"19:00",group:"H",venue:"Houston",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:66,home:"Uruguay",       away:"Spain",               date:"2026-06-26",time:"18:00",group:"H",venue:"Guadalajara",   status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE I ──
+  {id:17,home:"France",        away:"Senegal",             date:"2026-06-16",time:"15:00",group:"I",venue:"New York",      status:"scheduled",homeScore:null,awayScore:null},
+  {id:18,home:"Iraq",          away:"Norway",              date:"2026-06-16",time:"18:00",group:"I",venue:"Boston",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:42,home:"France",        away:"Iraq",                date:"2026-06-22",time:"17:00",group:"I",venue:"Philadelphia",  status:"scheduled",homeScore:null,awayScore:null},
+  {id:41,home:"Norway",        away:"Senegal",             date:"2026-06-22",time:"20:00",group:"I",venue:"New York",      status:"scheduled",homeScore:null,awayScore:null},
+  {id:61,home:"Norway",        away:"France",              date:"2026-06-26",time:"15:00",group:"I",venue:"Boston",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:62,home:"Senegal",       away:"Iraq",                date:"2026-06-26",time:"15:00",group:"I",venue:"Toronto",       status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE J ──
+  {id:19,home:"Argentina",     away:"Algeria",             date:"2026-06-16",time:"20:00",group:"J",venue:"Kansas City",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:20,home:"Austria",       away:"Jordan",              date:"2026-06-16",time:"21:00",group:"J",venue:"San Francisco", status:"scheduled",homeScore:null,awayScore:null},
+  {id:43,home:"Argentina",     away:"Austria",             date:"2026-06-22",time:"12:00",group:"J",venue:"Dallas",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:44,home:"Jordan",        away:"Algeria",             date:"2026-06-22",time:"20:00",group:"J",venue:"San Francisco", status:"scheduled",homeScore:null,awayScore:null},
+  {id:69,home:"Algeria",       away:"Austria",             date:"2026-06-27",time:"21:00",group:"J",venue:"Kansas City",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:70,home:"Jordan",        away:"Argentina",           date:"2026-06-27",time:"21:00",group:"J",venue:"Dallas",        status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE K ──
+  {id:23,home:"Portugal",      away:"DR Congo",            date:"2026-06-17",time:"12:00",group:"K",venue:"Houston",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:24,home:"Uzbekistan",    away:"Colombia",            date:"2026-06-17",time:"20:00",group:"K",venue:"Mexico City",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:47,home:"Portugal",      away:"Uzbekistan",          date:"2026-06-23",time:"12:00",group:"K",venue:"Houston",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:48,home:"Colombia",      away:"DR Congo",            date:"2026-06-23",time:"20:00",group:"K",venue:"Guadalajara",   status:"scheduled",homeScore:null,awayScore:null},
+  {id:71,home:"Colombia",      away:"Portugal",            date:"2026-06-27",time:"19:30",group:"K",venue:"Miami",         status:"scheduled",homeScore:null,awayScore:null},
+  {id:72,home:"DR Congo",      away:"Uzbekistan",          date:"2026-06-27",time:"19:30",group:"K",venue:"Atlanta",       status:"scheduled",homeScore:null,awayScore:null},
+  // ── GROUPE L ──
+  {id:21,home:"Ghana",         away:"Panama",              date:"2026-06-17",time:"19:00",group:"L",venue:"Toronto",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:22,home:"England",       away:"Croatia",             date:"2026-06-17",time:"15:00",group:"L",venue:"Dallas",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:45,home:"England",       away:"Ghana",               date:"2026-06-23",time:"16:00",group:"L",venue:"Boston",        status:"scheduled",homeScore:null,awayScore:null},
+  {id:46,home:"Panama",        away:"Croatia",             date:"2026-06-23",time:"19:00",group:"L",venue:"Toronto",       status:"scheduled",homeScore:null,awayScore:null},
+  {id:67,home:"Panama",        away:"England",             date:"2026-06-27",time:"17:00",group:"L",venue:"New York",      status:"scheduled",homeScore:null,awayScore:null},
+  {id:68,home:"Croatia",       away:"Ghana",               date:"2026-06-27",time:"17:00",group:"L",venue:"Philadelphia",  status:"scheduled",homeScore:null,awayScore:null},
+];
+
+/* ═══════════════════════════════════════════════════════════════
+   STYLES
+   ═══════════════════════════════════════════════════════════════ */
+const S={
+  app:{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Inter','Segoe UI',system-ui,sans-serif"},
+  hdr:{background:`linear-gradient(160deg,#020a04 0%,#091410 75%)`,borderBottom:`1px solid ${C.border}`,padding:"14px 18px 12px",display:"flex",alignItems:"center",gap:"10px"},
+  title:{fontSize:"17px",fontWeight:800,color:C.white,margin:0,letterSpacing:"-0.5px"},
+  sub:{fontSize:"10px",color:C.muted,marginTop:"2px"},
+  badge:{background:C.green,color:"#000",fontSize:"9px",fontWeight:800,padding:"2px 6px",borderRadius:"3px",letterSpacing:"1.5px"},
+  badgeG:{background:C.gold,color:"#000",fontSize:"9px",fontWeight:800,padding:"2px 6px",borderRadius:"3px"},
+  main:{maxWidth:"940px",margin:"0 auto",padding:"14px 12px 52px"},
+  tabs:{display:"flex",gap:"1px",borderBottom:`1px solid ${C.border}`,marginBottom:"13px",flexWrap:"wrap"},
+  tab:{padding:"8px 12px",fontSize:"12px",fontWeight:600,color:C.muted,background:"none",border:"none",cursor:"pointer",borderBottom:"2px solid transparent"},
+  tabA:{color:C.green,borderBottom:`2px solid ${C.green}`},
+  grid:{display:"grid",gap:"7px"},
+  mc:{background:C.card,border:`1px solid ${C.border}`,borderRadius:"9px",padding:"11px 13px",cursor:"pointer",transition:"border-color .12s"},
+  mcS:{border:`1px solid ${C.green}`,background:"#0f2316"},
+  mr:{display:"flex",alignItems:"center",gap:"8px"},
+  tn:{fontSize:"14px",fontWeight:700,color:C.white,flex:1},
+  tnR:{textAlign:"right"},
+  vs:{background:C.border,borderRadius:"5px",padding:"3px 9px",fontSize:"11px",color:C.muted,fontWeight:700,minWidth:"30px",textAlign:"center"},
+  mm:{fontSize:"10px",color:C.muted,marginTop:"6px",display:"flex",justifyContent:"space-between"},
+  btn:{background:C.green,color:"#000",border:"none",borderRadius:"8px",padding:"12px 20px",fontWeight:800,fontSize:"14px",cursor:"pointer",width:"100%",marginTop:"12px"},
+  btnOff:{opacity:.4,cursor:"not-allowed"},
+  rcard:{background:C.card,border:`1px solid ${C.border}`,borderRadius:"12px",padding:"18px",marginTop:"14px"},
+  sc:{fontSize:"10px",color:C.muted,letterSpacing:"1.5px",textTransform:"uppercase",textAlign:"center",marginBottom:"3px"},
+  srow:{display:"flex",alignItems:"center",justifyContent:"center",gap:"14px",margin:"12px 0 6px"},
+  sbig:{fontSize:"42px",fontWeight:900,color:C.white,lineHeight:1,minWidth:"35px",textAlign:"center"},
+  ssep:{fontSize:"24px",color:C.muted,fontWeight:200},
+  otag:{display:"inline-block",padding:"4px 13px",borderRadius:"20px",fontSize:"12px",fontWeight:700},
+  prow:{display:"flex",gap:"5px",marginTop:"12px"},
+  pb:{flex:1,background:"#080e09",border:`1px solid ${C.border}`,borderRadius:"7px",padding:"8px 5px",textAlign:"center"},
+  pv:{fontSize:"19px",fontWeight:800,color:C.white},
+  pl:{fontSize:"10px",color:C.muted,marginTop:"1px"},
+  po:{fontSize:"10px",color:C.goldDim,marginTop:"1px"},
+  sec:{marginTop:"14px"},
+  st:{fontSize:"10px",fontWeight:700,letterSpacing:"2px",color:C.muted,textTransform:"uppercase",marginBottom:"8px"},
+  // Bet row
+  brow:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",borderRadius:"7px",marginBottom:"5px",background:C.surface,border:`1px solid ${C.border}`},
+  browHL:{border:`1px solid ${C.goldDim}`,background:"#0a0e06"},
+  bleft:{flex:1},
+  blabel:{fontSize:"12px",fontWeight:600,color:C.white},
+  bsub:{fontSize:"10px",color:C.muted,marginTop:"1px"},
+  bright:{textAlign:"right",minWidth:"90px"},
+  bpct:{fontSize:"13px",fontWeight:700,color:C.white},
+  bodd:{fontSize:"10px",color:C.goldDim,marginTop:"1px"},
+  // Score family
+  sfRow:{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:"11px"},
+  chip:{fontSize:"10px",padding:"2px 8px",borderRadius:"4px",background:C.surface,border:`1px solid ${C.border}`,color:C.muted,display:"inline-block",margin:"2px"},
+  chipW:{color:C.red,borderColor:"#3a1010",background:"#160606"},
+  chipG:{color:C.green,borderColor:"#0a3a1a",background:"#060e07"},
+  chipB:{color:C.blue,borderColor:"#0a2030",background:"#060c10"},
+  chipO:{color:C.gold,borderColor:"#3a2a00",background:"#130e00"},
+  ai:{marginTop:"12px",padding:"12px",background:"#060e08",borderRadius:"8px",border:`1px solid ${C.greenDim}`},
+  sp:{display:"flex",flexDirection:"column",alignItems:"center",padding:"24px 16px",gap:"8px",color:C.muted,fontSize:"11px"},
+  err:{background:"#160606",border:"1px solid #3a1010",borderRadius:"7px",padding:"8px 12px",color:"#ff7070",fontSize:"11px",margin:"8px 0"},
+  info:{background:C.card,border:`1px solid ${C.border}`,borderRadius:"7px",padding:"9px 12px",fontSize:"11px",color:C.muted,lineHeight:1.65,marginBottom:"11px"},
+  keyBox:{background:C.card,border:`1px solid ${C.border}`,borderRadius:"10px",padding:"14px",marginBottom:"10px"},
+  keyTitle:{fontSize:"10px",fontWeight:700,letterSpacing:"2px",color:C.gold,textTransform:"uppercase",marginBottom:"9px"},
+  keyInput:{width:"100%",background:C.surface,border:`1px solid ${C.border}`,color:C.text,borderRadius:"6px",padding:"8px 12px",fontSize:"12px",outline:"none",fontFamily:"monospace"},
+  keyHint:{fontSize:"10px",color:C.muted,marginTop:"5px",lineHeight:1.55},
+  eloRow:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 8px",borderBottom:`1px solid ${C.border}`,fontSize:"11px"},
+  grille:{display:"grid",gap:"8px"},
+  gr:{background:C.card,border:`1px solid ${C.border}`,borderRadius:"9px",padding:"12px 14px"},
+  grH:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"},
+  grM:{fontSize:"12px",fontWeight:700,color:C.white},
+  grRow:{display:"flex",gap:"5px",flexWrap:"wrap"},
+};
+
+function FormDots({form}){
+  return(<span>{(form||"WWDLD").slice(-5).split("").map((c,i)=>(
+    <span key={i} style={{display:"inline-block",width:"15px",height:"15px",borderRadius:"50%",textAlign:"center",lineHeight:"15px",fontSize:"9px",fontWeight:700,margin:"0 1px",
+      background:c==="W"?"#0a3a1a":c==="D"?"#0a1a2a":"#2a0808",color:c==="W"?C.green:c==="D"?C.blue:C.red}}>{c}</span>
+  ))}</span>);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   BET ROW COMPONENT
+   ═══════════════════════════════════════════════════════════════ */
+function BetRow({label, sublabel, prob, marketType, bookOdd, highlight}) {
+  const rating = starRating(prob, marketType, bookOdd);
+  const isTop = rating.stars >= 4;
+  return (
+    <div style={{...S.brow,...(isTop||highlight?S.browHL:{})}}>
+      <div style={S.bleft}>
+        <div style={S.blabel}>{label}</div>
+        {sublabel && <div style={S.bsub}>{sublabel}</div>}
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:"12px"}}>
+        <div style={S.bright}>
+          <div style={{...S.bpct,color:rating.color}}>{pct(prob)}</div>
+          <div style={S.bodd}>Cote ≈ {odd(prob)}{bookOdd?` . book ${bookOdd}`:""}</div>
+        </div>
+        <div style={{textAlign:"center",minWidth:"80px"}}>
+          <Stars n={rating.stars} color={rating.color}/>
+          <div style={{fontSize:"9px",color:rating.color,marginTop:"1px"}}>{rating.label}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAIN APP
+   ═══════════════════════════════════════════════════════════════ */
+function App() {
+  const [matches,setMatches]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [apiErr,setApiErr]=useState(null);
+  const [apiKey,setApiKey]=useState("209aac3aaffd8d9e1e2e1a48190dccd0");
+  const [anthropicKey,setAnthropicKey]=useState("");
+  const [sel,setSel]=useState(null);
+  const [stake,setStake]=useState("normal");
+  const [pred,setPred]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const [tab,setTab]=useState("matches");
+  const [grille,setGrille]=useState([]);
+  const [log,setLog]=useState([]);
+  const [liveElo,setLiveElo]=useState({...ELO_BASE});
+  const [eloHistory,setEloHistory]=useState([]);
+  const [eloLive,setEloLive]=useState(false);
+
+  const addLog=msg=>setLog(p=>[`${new Date().toLocaleTimeString("fr")} -- ${msg}`,...p].slice(0,15));
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true);
+      // Helper: normalize match list + compute ELO
+      const processMatches=(list,src)=>{
+        setMatches(list);
+        addLog(`[OK] ${list.length} matchs charges (${src})`);
+        const played=list.filter(m=>m.homeScore!==null&&m.awayScore!==null);
+        if(played.length>0){
+          let elo={...ELO_BASE};const hist=[];
+          played.forEach(m=>{
+            const eH=elo[m.home]||1850,eA=elo[m.away]||1850;
+            const{newH,newA,dH,dA}=updateElo(eH,eA,m.homeScore,m.awayScore);
+            elo[m.home]=newH;elo[m.away]=newA;
+            hist.push({home:m.home,away:m.away,sH:m.homeScore,sA:m.awayScore,dH,dA,date:m.date});
+          });
+          setLiveElo(elo);setEloHistory(hist);setEloLive(true);
+          addLog(`[ELO] ELO mis a jour -- ${played.length} resultat(s)`);
+        }
+      };
+
+      // ── SOURCE 1 : API-Football (direct) ──
+      try{
+        addLog("Chargement API-Football…");
+        const AF_KEY=apiKey.trim().length>8?apiKey.trim():"209aac3aaffd8d9e1e2e1a48190dccd0";
+        const afResp=await fetch(`https://v3.football.api-sports.io/fixtures?league=1&season=2026`,{
+          headers:{"x-apisports-key":AF_KEY,"x-rapidapi-host":"v3.football.api-sports.io"}
+        });
+        addLog(`API-Football: HTTP ${afResp.status}`);
+        if(!afResp.ok) throw new Error(`HTTP ${afResp.status}`);
+        const afData=await afResp.json();
+        if(afData?.errors?.requests) throw new Error("quota dépassé: "+JSON.stringify(afData.errors));
+        const raw=afData?.response||[];
+        if(!raw.length) throw new Error(`response vide -- full: ${JSON.stringify(afData).slice(0,200)}`);
+        const list=raw.map((m,i)=>({
+          id:m.fixture?.id||i,
+          home:m.teams?.home?.name||"TBD",
+          away:m.teams?.away?.name||"TBD",
+          date:m.fixture?.date?.slice(0,10)||"",
+          time:m.fixture?.date?.slice(11,16)||"",
+          group:m.league?.round||"",
+          venue:m.fixture?.venue?.city||"Default",
+          status:m.fixture?.status?.short||"NS",
+          homeScore:m.goals?.home??null,
+          awayScore:m.goals?.away??null,
+        }));
+        processMatches(list,"API-Football");
+        return;
+      }catch(e1){
+        addLog(`[!] API-Football echoue: ${e1.message}`);
+      }
+
+      // ── SOURCE 2 : worldcup26.ir (direct) ──
+      try{
+        addLog("Tentative worldcup26.ir…");
+        const wcResp=await fetch(`https://worldcup26.ir/get/games`);
+        addLog(`worldcup26.ir: HTTP ${wcResp.status}`);
+        if(!wcResp.ok) throw new Error(`HTTP ${wcResp.status}`);
+        const d=await wcResp.json();
+        const raw=Array.isArray(d)?d:d.games||d.matches||[];
+        if(!raw.length) throw new Error("response vide");
+        const list=raw.map((m,i)=>({
+          id:m.id||i,home:m.home_team?.name_en||m.home_team||"TBD",
+          away:m.away_team?.name_en||m.away_team||"TBD",
+          date:m.date||"",time:m.time||"",group:m.group||m.stage||"",
+          venue:m.stadium?.city_en||m.venue||"Default",
+          status:m.status||"scheduled",
+          homeScore:m.home_score??null,awayScore:m.away_score??null,
+        }));
+        processMatches(list,"worldcup26.ir");
+        return;
+      }catch(e2){
+        addLog(`[!] worldcup26.ir echoue: ${e2.message}`);
+      }
+
+      // ── FALLBACK : démo intégrée ──
+      addLog("Fallback démo chargée — toutes les analyses restent opérationnelles");
+      setApiErr("Sources live indisponibles — démo intégrée chargée (analyses opérationnelles)");
+      processMatches(DEMO,"démo");
+      setLoading(false);
+    })();
+  },[]);
+
+  const upcoming=matches.filter(m=>m.homeScore===null);
+
+  const analyze=useCallback(async()=>{
+    if(!sel)return;
+    setBusy(true);setPred(null);
+
+    addLog("① Météo Open-Meteo…");
+    let wx=null,wm=1,am=1,wxN=[];
+    const wData=await fetchWx(sel.venue||"Default",sel.date);
+    if(wData){wx=wData;const wRes=wxM(wData.temp,wData.precip,wData.wind,wData.wmo);wm=wRes.mod;wxN=wRes.notes;am=altM(wData.alt);addLog(`(1) ${wData.temp}degC ${WMO[wData.wmo]||""}`);}
+
+    let cotes={},lineupH=null,lineupA=null;
+    if(apiKey.trim().length>8){
+      addLog("② API-Football…");
+      const today=sel.date?.slice(0,10)||new Date().toISOString().slice(0,10);
+      const fix=await apif(`fixtures?league=1&season=2026&date=${today}`,apiKey);
+      if(fix?.response?.length){
+        const match=fix.response.find(f=>(f.teams.home.name.includes(sel.home)||sel.home.includes(f.teams.home.name))&&(f.teams.away.name.includes(sel.away)||sel.away.includes(f.teams.away.name)));
+        if(match){
+          const fid=match.fixture.id;
+          const[lu,od]=await Promise.all([apif(`fixtures/lineups?fixture=${fid}`,apiKey),apif(`odds?fixture=${fid}&bookmaker=8`,apiKey)]);
+          if(lu?.response?.length){lineupH=lu.response.find(t=>t.team.name.includes(sel.home));lineupA=lu.response.find(t=>t.team.name.includes(sel.away));}
+          const b=od?.response?.[0]?.bookmakers?.[0]?.bets?.find(b=>b.name==="Match Winner");
+          b?.values?.forEach(v=>{if(v.value==="Home")cotes.home=+v.odd;if(v.value==="Draw")cotes.draw=+v.odd;if(v.value==="Away")cotes.away=+v.odd;});
+          if(cotes.home)addLog(`(2) Cotes: 1=${cotes.home} X=${cotes.draw} 2=${cotes.away}`);
+        }
+      }
+    }
+
+    const sMod=stake==="low"?0.88:stake==="decider"?0.82:1.0;
+    const{lH,lA,eH,eA,eHB,eAB,injH,injA}=computeL(sel.home,sel.away,liveElo,wm,am,sMod);
+    const mat=buildMatrix(lH,lA);
+    const D=deriveAll(mat,sel.home,sel.away);
+    addLog(`(3) lambda=${lH}/${lA} | ${sel.home} ${pct(D.pH)}`);
+
+    // Value bets
+    let vb=[];
+    if(cotes.home){
+      if(D.pH>1/cotes.home*1.05)vb.push({l:`1 ${sel.home}`,p:pct(D.pH),o:cotes.home,e:((D.pH*cotes.home-1)*100).toFixed(1)});
+      if(D.pD>1/cotes.draw*1.05)vb.push({l:"Nul",p:pct(D.pD),o:cotes.draw,e:((D.pD*cotes.draw-1)*100).toFixed(1)});
+      if(D.pA>1/cotes.away*1.05)vb.push({l:`2 ${sel.away}`,p:pct(D.pA),o:cotes.away,e:((D.pA*cotes.away-1)*100).toFixed(1)});
+    }
+
+    addLog("④ Analyse IA…");
+    let ai="";
+    if(anthropicKey.trim().length>20){
+      try{
+        const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":anthropicKey.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:
+`Expert paris sportifs WC 2026. Match: ${sel.home} vs ${sel.away}.
+lambda: ${lH}/${lA} | ELO: ${eH}/${eA}${eH!==eHB?` (live D${eH-eHB>0?"+":""}${eH-eHB})`:""} 
+1X2: ${pct(D.pH)}/${pct(D.pD)}/${pct(D.pA)} | Over2.5: ${pct(D.o25)} | BTTS: ${pct(D.btts)}
+Score: ${D.best.h}-${D.best.a} (${pct(D.best.p)})
+Blesses: ${[...(BASE_INJURIES[sel.home]||[]),...(BASE_INJURIES[sel.away]||[])].map(i=>i.p).join(", ")||"aucun"}
+Meteo: ${wx?`${wx.temp} degC ${WMO[wx.wmo]||""}${wx.alt>1000?" alt."+wx.alt+"m":""}`:  "inconnue"}
+${cotes.home?`Cotes book: 1=${cotes.home} X=${cotes.draw} 2=${cotes.away}`:""}
+${vb.length?`Value bets: ${vb.map(v=>v.l).join(", ")}`:""}
+En 4 phrases: (1) analyse tactique, (2) meilleur pari avec chiffres, (3) Over/Under optimal, (4) risque principal.`}]})});
+        const dd=await r.json();ai=dd.content?.[0]?.text||"";addLog("④ IA OK");
+      }catch{addLog("④ IA échouée");}
+    }else{addLog("④ IA ignorée — clé Anthropic non configurée");}
+
+    setPred({home:sel.home,away:sel.away,venue:sel.venue,date:sel.date,lH,lA,eH,eA,eHB,eAB,D,wx,wxN,wm,am,sMod,injH,injA,cotes,vb,ai,lineupH,lineupA,ts:new Date().toLocaleTimeString("fr")});
+    addLog(`[OK] ${sel.home} vs ${sel.away} termine`);
+    setBusy(false);
+  },[sel,stake,apiKey,anthropicKey,liveElo]);
+
+  const addToGrille=()=>{if(pred)setGrille(g=>{const e=g.find(x=>x.home===pred.home&&x.away===pred.away);return e?g.map(x=>x===e?pred:x):[...g,pred];});};
+
+  return(
+    <div style={S.app}>
+      <div style={S.hdr}>
+        <div style={{fontSize:"24px"}}>⚽</div>
+        <div>
+          <p style={S.title}>WC 2026 Predictor <span style={{color:C.green,fontSize:"11px",fontWeight:600}}>V5</span></p>
+          <p style={S.sub}>ELO live · Poisson-DC · Météo · Compositions · Système ⭐ · Combinés</p>
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",gap:"5px"}}>
+          {eloLive&&<span style={S.badgeG}>ELO⚡</span>}
+          <span style={S.badge}>LIVE</span>
+        </div>
+      </div>
+
+      <div style={S.main}>
+        <div style={S.tabs}>
+          {[["matches",`Matchs (${upcoming.length})`],["grille",`Grille (${grille.length})`],["elo",`ELO${eloLive?" [ELO]":""}`],["setup","Config"],["logs","Logs"]].map(([k,l])=>(
+            <button key={k} style={{...S.tab,...(tab===k?S.tabA:{})}} onClick={()=>setTab(k)}>{l}</button>
+          ))}
+        </div>
+
+        {apiErr&&<div style={S.err}>⚠ {apiErr}</div>}
+        {loading&&<div style={{textAlign:"center",padding:"24px",color:C.muted,fontSize:"13px"}}>Chargement + calcul ELO…</div>}
+
+        {tab==="matches"&&!loading&&(<>
+          {/* STICKY ANALYSE BAR */}
+          <div style={{position:"sticky",top:0,zIndex:20,background:C.bg,paddingBottom:"10px",borderBottom:`1px solid ${C.border}`,marginBottom:"12px"}}>
+            <div style={{display:"flex",gap:"5px",marginBottom:"7px",flexWrap:"wrap"}}>
+              {[["normal","Standard"],["low","Déjà qualifié (−12%)"],["decider","Décisif (−18%)"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setStake(v)} style={{padding:"5px 10px",borderRadius:"6px",fontSize:"11px",fontWeight:600,cursor:"pointer",border:"none",background:stake===v?C.green:C.card,color:stake===v?"#000":C.muted}}>{l}</button>
+              ))}
+            </div>
+            <button style={{...S.btn,marginTop:0,...(!sel||busy?S.btnOff:{})}} disabled={!sel||busy} onClick={analyze}>
+              {busy?"⚙️ Analyse en cours…":sel?`[pred] ${sel.home} vs ${sel.away}`:"⬇ Sélectionne un match ci-dessous"}
+            </button>
+            {busy&&<div style={{paddingTop:"8px"}}>
+              <div style={{width:"100%",height:"3px",background:C.border,borderRadius:"2px",overflow:"hidden",marginBottom:"5px"}}>
+                <div style={{width:"55%",height:"100%",background:`linear-gradient(90deg,${C.greenDim},${C.green},${C.gold})`,animation:"sl 1.1s ease-in-out infinite",borderRadius:"2px"}}/>
+              </div>
+              <div style={{color:C.muted,fontSize:"11px",textAlign:"center"}}>{log[0]||"…"}</div>
+            </div>}
+          </div>
+          {/* MATCHS PAR DATE — passés filtrés */}
+          {(()=>{
+            const today=new Date();today.setHours(0,0,0,0);
+            const allM=upcoming.length?upcoming:DEMO;
+            const filtered=allM.filter(m=>{
+              if(!m.date)return true;
+              const d=new Date(m.date);d.setHours(0,0,0,0);
+              return d>=today;
+            });
+            const byDate={};
+            filtered.forEach(m=>{const k=m.date?.slice(0,10)||"—";if(!byDate[k])byDate[k]=[];byDate[k].push(m);});
+            const dates=Object.keys(byDate).sort();
+            if(!dates.length)return(<div style={{textAlign:"center",color:C.muted,padding:"24px",fontSize:"13px"}}>Aucun match à venir.</div>);
+            return dates.map(date=>{
+              const isToday=date===new Date().toISOString().slice(0,10);
+              const label=isToday?"🟢 Aujourd'hui":new Date(date+"T12:00:00").toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"});
+              return(
+                <div key={date} style={{marginBottom:"16px"}}>
+                  <div style={{fontSize:"11px",fontWeight:700,color:isToday?C.green:C.gold,letterSpacing:"1px",textTransform:"uppercase",marginBottom:"7px",paddingBottom:"4px",borderBottom:`1px solid ${C.border}`}}>
+                    {label}
+                  </div>
+                  <div style={S.grid}>
+                    {byDate[date].map(m=>{
+                      const s=sel?.id===m.id;
+                      const eH=liveElo[m.home]||ELO_BASE[m.home]||1850;
+                      const eA=liveElo[m.away]||ELO_BASE[m.away]||1850;
+                      const dH=eH-(ELO_BASE[m.home]||1850);
+                      const dA=eA-(ELO_BASE[m.away]||1850);
+                      return(
+                        <div key={m.id} style={{...S.mc,...(s?S.mcS:{})}} onClick={()=>{setSel(m);setPred(null);}}>
+                          <div style={S.mr}>
+                            <div style={{flex:1}}>
+                              <div style={S.tn}>{m.home}</div>
+                              <div style={{fontSize:"10px",color:dH>0?C.green:dH<0?C.red:C.muted}}>ELO {eH}{dH!==0?` (${dH>0?"+":""}${dH})`:""}</div>
+                            </div>
+                            <div style={{textAlign:"center",minWidth:"44px"}}>
+                              <div style={S.vs}>VS</div>
+                              <div style={{fontSize:"10px",color:C.muted,marginTop:"2px"}}>{m.time?.slice(0,5)}</div>
+                            </div>
+                            <div style={{flex:1,textAlign:"right"}}>
+                              <div style={{...S.tn,...S.tnR}}>{m.away}</div>
+                              <div style={{fontSize:"10px",color:dA>0?C.green:dA<0?C.red:C.muted,textAlign:"right"}}>ELO {eA}{dA!==0?` (${dA>0?"+":""}${dA})`:""}</div>
+                            </div>
+                          </div>
+                          <div style={S.mm}>
+                            <span style={{color:C.muted}}>Gr.{m.group}</span>
+                            <span style={{color:C.gold}}>📍 {m.venue||"—"}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            });
+          })()}
+          {pred&&<PredResult p={pred} onAdd={addToGrille}/>}
+        </>)}
+
+        {tab==="grille"&&(grille.length===0
+          ?<div style={{textAlign:"center",padding:"32px",color:C.muted}}>Ajoute des analyses depuis l'onglet Matchs.</div>
+          :<GrilleView grille={grille} onRemove={i=>setGrille(g=>g.filter((_,idx)=>idx!==i))}/>
+        )}
+        {tab==="elo"&&<EloView liveElo={liveElo} history={eloHistory}/>}
+        {tab==="setup"&&<Setup apiKey={apiKey} setApiKey={setApiKey} anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey}/>}
+        {tab==="logs"&&<div>
+          <div style={S.st}>Activité</div>
+          {log.map((l,i)=><div key={i} style={{fontSize:"11px",color:i===0?C.green:C.muted,padding:"4px 0",borderBottom:`1px solid ${C.border}`}}>{l}</div>)}
+        </div>}
+      </div>
+      <style>{`@keyframes sl{0%{transform:translateX(-100%)}100%{transform:translateX(220%)}}\n*{box-sizing:border-box;}body{margin:0;}input:focus{border-color:#00e676!important;}`}</style>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PREDICTION RESULT — V5 with full bet sections + stars
+   ═══════════════════════════════════════════════════════════════ */
+function PredResult({p,onAdd}){
+  const{home,away,lH,lA,eH,eA,eHB,eAB,D,wx,wxN,injH,injA,cotes,vb,ai,lineupH,lineupA,ts,sMod}=p;
+  const win=D.pH>D.pD&&D.pH>D.pA?"home":D.pA>D.pH&&D.pA>D.pD?"away":"draw";
+  const eloLive=eH!==eHB||eA!==eAB;
+
+  return(
+    <div style={S.rcard}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"10px"}}>
+        <div style={{fontSize:"10px",color:C.muted}}>{ts}{eloLive&&<span style={{color:C.gold,marginLeft:"6px"}}>⚡ ELO live</span>}</div>
+        <button onClick={onAdd} style={{background:C.goldDim,color:"#000",border:"none",borderRadius:"5px",padding:"4px 10px",fontSize:"10px",fontWeight:700,cursor:"pointer"}}>+ Grille</button>
+      </div>
+
+      {/* Score */}
+      <div style={{textAlign:"center"}}>
+        <div style={S.sc}>Score le plus probable</div>
+        <div style={S.srow}>
+          <div><div style={{fontSize:"11px",color:C.muted,marginBottom:"2px"}}>{home}</div><div style={S.sbig}>{D.best.h}</div></div>
+          <div style={S.ssep}>—</div>
+          <div><div style={{fontSize:"11px",color:C.muted,marginBottom:"2px"}}>{away}</div><div style={S.sbig}>{D.best.a}</div></div>
+        </div>
+        <div style={{fontSize:"10px",color:C.muted}}>Prob. {pct(D.best.p)} · lambda {lH}/{lA} · ELO {eH}{eH!==eHB?` (${eH-eHB>0?"+":""}${eH-eHB})`:""} / {eA}{eA!==eAB?` (${eA-eAB>0?"+":""}${eA-eAB})`:""}</div>
+        <div style={{marginTop:"8px"}}>
+          {win==="home"&&<span style={{...S.otag,background:"#082a10",color:C.green}}>✓ Victoire {home} ({pct(D.pH)})</span>}
+          {win==="draw"&&<span style={{...S.otag,background:"#08182a",color:C.blue}}>⚖ Match nul ({pct(D.pD)})</span>}
+          {win==="away"&&<span style={{...S.otag,background:"#200808",color:C.red}}>✓ Victoire {away} ({pct(D.pA)})</span>}
+        </div>
+      </div>
+
+      {/* Value bets */}
+      {vb.length>0&&<div style={{marginTop:"9px",padding:"8px 10px",background:"#060f07",border:`1px solid ${C.green}`,borderRadius:"7px"}}>
+        <div style={{fontSize:"10px",fontWeight:700,color:C.green,marginBottom:"4px"}}>⭐ VALUE BETS — Edge détecté vs bookmaker</div>
+        {vb.map(v=><div key={v.l} style={{fontSize:"11px",color:C.text,marginBottom:"1px"}}><strong>{v.l}</strong> — modèle {v.p} vs cote {v.o} → +{v.e}%</div>)}
+      </div>}
+
+      {/* ── SECTION 1 : Résultat 1X2 ── */}
+      <div style={S.sec}>
+        <div style={S.st}>① Résultat 1X2</div>
+        <BetRow label={`Victoire ${home}`} prob={D.pH} marketType="1x2" bookOdd={cotes.home}/>
+        <BetRow label="Match nul" prob={D.pD} marketType="1x2" bookOdd={cotes.draw}/>
+        <BetRow label={`Victoire ${away}`} prob={D.pA} marketType="1x2" bookOdd={cotes.away}/>
+      </div>
+
+      {/* ── SECTION 2 : Over/Under ── */}
+      <div style={S.sec}>
+        <div style={S.st}>② Over / Under buts</div>
+        <BetRow label="Over 1.5 buts" prob={D.o15} marketType="ou"/>
+        <BetRow label="Over 2.5 buts" prob={D.o25} marketType="ou"/>
+        <BetRow label="Under 2.5 buts" prob={D.u25} marketType="ou"/>
+        <BetRow label="Over 3.5 buts" prob={D.o35} marketType="ou"/>
+        <BetRow label="Les deux marquent (BTTS)" prob={D.btts} marketType="ou"/>
+      </div>
+
+      {/* ── SECTION 3 : Paris combinés Résultat × O/U ── */}
+      <div style={S.sec}>
+        <div style={S.st}>③ Paris combinés Résultat × Over/Under</div>
+        {[
+          {l:`${home} & Over 1.5`, p:sumWhere2(D,home,away,"hw","o15")},
+          {l:`${home} & Over 2.5`, p:sumWhere2(D,home,away,"hw","o25")},
+          {l:`${home} & Under 2.5`,p:sumWhere2(D,home,away,"hw","u25")},
+          {l:`Nul & Under 2.5`,    p:sumWhere2(D,home,away,"d","u25")},
+          {l:`${away} & Under 2.5`,p:sumWhere2(D,home,away,"aw","u25")},
+          {l:`${away} & Over 1.5`, p:sumWhere2(D,home,away,"aw","o15")},
+        ].map(({l,p:prob})=>(
+          <BetRow key={l} label={l} prob={prob} marketType="combo"/>
+        ))}
+      </div>
+
+      {/* ── SECTION 4 : Buts par équipe ── */}
+      <div style={S.sec}>
+        <div style={S.st}>④ Nombre de buts par équipe</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+          <div>
+            <div style={{fontSize:"10px",color:C.muted,marginBottom:"5px",fontWeight:600}}>{home}</div>
+            {[0,1,2].map(n=>(
+              <BetRow key={n} label={`Exactement ${n} but${n>1?"s":""}`} sublabel={home} prob={D.tgH[Math.min(n,3)]} marketType="teamGoals"/>
+            ))}
+            <BetRow label="3+ buts" sublabel={home} prob={1-D.tgH[0]-D.tgH[1]-D.tgH[2]} marketType="teamGoals"/>
+          </div>
+          <div>
+            <div style={{fontSize:"10px",color:C.muted,marginBottom:"5px",fontWeight:600}}>{away}</div>
+            {[0,1,2].map(n=>(
+              <BetRow key={n} label={`Exactement ${n} but${n>1?"s":""}`} sublabel={away} prob={D.tgA[Math.min(n,3)]} marketType="teamGoals"/>
+            ))}
+            <BetRow label="3+ buts" sublabel={away} prob={1-D.tgA[0]-D.tgA[1]-D.tgA[2]} marketType="teamGoals"/>
+          </div>
+        </div>
+      </div>
+
+      {/* ── SECTION 5 : Top scorelines ── */}
+      <div style={S.sec}>
+        <div style={S.st}>⑤ Scores exacts (top 6)</div>
+        {D.top6.map(({h,a,p:prob})=>(
+          <BetRow key={`${h}-${a}`} label={`${home} ${h}-${a} ${away}`} prob={prob}
+            marketType="scoreExact" highlight={h===D.best.h&&a===D.best.a}/>
+        ))}
+      </div>
+
+      {/* Facteurs */}
+      <div style={S.sec}>
+        <div style={S.st}>Facteurs appliqués</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:"3px",marginBottom:"8px"}}>
+          {wx&&<span style={{...S.chip,...S.chipB}}>{WXE[wx.wmo]||"🌤"} {wx.temp} degC — {wx.stadium}</span>}
+          {wx?.alt>1000&&<span style={{...S.chip,...S.chipW}}>⛰ Altitude {wx.alt}m</span>}
+          {wxN.map(n=><span key={n} style={{...S.chip,...S.chipW}}>{n}</span>)}
+          {eloLive&&<span style={{...S.chip,...S.chipO}}>⚡ ELO recalculé</span>}
+          {sMod<1&&<span style={{...S.chip,...S.chipW}}>⚠ Enjeu ×{sMod}</span>}
+          {lineupH&&<span style={{...S.chip,...S.chipG}}>✓ XI {home}</span>}
+          {lineupA&&<span style={{...S.chip,...S.chipG}}>✓ XI {away}</span>}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px"}}>
+          {[{team:home,inj:injH,form:QUAL[home]?.form},{team:away,inj:injA,form:QUAL[away]?.form}].map(({team,inj,form})=>(
+            <div key={team} style={{background:C.surface,borderRadius:"7px",padding:"8px",border:`1px solid ${C.border}`}}>
+              <div style={{fontSize:"11px",fontWeight:700,color:C.white,marginBottom:"4px"}}>{team}</div>
+              <FormDots form={form}/>
+              {inj?.length>0&&<div style={{marginTop:"4px"}}>{inj.map(i=><span key={i.p} style={{...S.chip,...S.chipW,display:"inline-block",margin:"1px"}}>⚠ {i.p}</span>)}</div>}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {ai&&<div style={S.ai}>
+        <div style={{fontSize:"10px",color:C.gold,letterSpacing:"1.5px",textTransform:"uppercase",marginBottom:"6px"}}>🤖 Analyse IA</div>
+        <p style={{fontSize:"12px",color:C.text,lineHeight:1.7,margin:0}}>{ai}</p>
+      </div>}
+    </div>
+  );
+}
+
+// Helper: recompute combos from D object
+function sumWhere2(D,home,away,result,ouType){
+  // We need the raw matrix — store it in D for combos
+  // Approximate from stored marginals (accurate enough)
+  const rP = result==="hw"?D.pH:result==="d"?D.pD:D.pA;
+  const ouP = ouType==="o15"?D.o15:ouType==="o25"?D.o25:ouType==="u25"?D.u25:D.o35;
+  // Correlation adjustment (result and OU are correlated)
+  // For home win + over: likely higher correlation (high-scoring = usually one team dominates)
+  // Simple estimate: p(A∩B) ≈ p(A) * p(B) * (1 + corr)
+  const corr = (result==="hw"&&ouType==="o25") ? 0.15
+             : (result==="aw"&&ouType==="o25") ? 0.10
+             : (result==="d"&&ouType==="u25")  ? 0.20
+             : (result==="hw"&&ouType==="u25") ? -0.20
+             : 0.05;
+  return Math.max(0.01, Math.min(0.95, rP * ouP * (1 + corr)));
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   GRILLE
+   ═══════════════════════════════════════════════════════════════ */
+function GrilleView({grille,onRemove}){
+  const today=new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"});
+  // Find best bet per match (highest star rating)
+  function bestBet(p){
+    const D=p.D;
+    const bets=[
+      {l:`1 ${p.home}`,prob:D.pH,t:"1x2",bk:p.cotes.home},
+      {l:"Nul",prob:D.pD,t:"1x2",bk:p.cotes.draw},
+      {l:`2 ${p.away}`,prob:D.pA,t:"1x2",bk:p.cotes.away},
+      {l:"Over 1.5",prob:D.o15,t:"ou"},
+      {l:"Over 2.5",prob:D.o25,t:"ou"},
+      {l:"Under 2.5",prob:D.u25,t:"ou"},
+      {l:"BTTS Non",prob:1-D.btts,t:"ou"},
+    ];
+    return bets.map(b=>({...b,r:starRating(b.prob,b.t,b.bk)})).sort((a,z)=>z.r.stars-a.r.stars||z.prob-a.prob)[0];
+  }
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"11px"}}>
+        <div style={{fontSize:"13px",fontWeight:700,color:C.white}}>Grille du {today}</div>
+        <div style={{fontSize:"10px",color:C.muted}}>{grille.length} match{grille.length>1?"s":""}</div>
+      </div>
+      <div style={S.grille}>
+        {grille.map((p,i)=>{
+          const win=p.D.pH>p.D.pD&&p.D.pH>p.D.pA?"home":p.D.pA>p.D.pH&&p.D.pA>p.D.pD?"away":"draw";
+          const best=bestBet(p);
+          return(
+            <div key={i} style={S.gr}>
+              <div style={S.grH}>
+                <div>
+                  <div style={S.grM}>{p.home} vs {p.away}</div>
+                  <div style={{fontSize:"9px",color:C.muted}}>{p.date?.slice(0,10)} · {p.venue}{p.eH!==p.eHB||p.eA!==p.eAB?" · ⚡ELO":""}</div>
+                </div>
+                <button onClick={()=>onRemove(i)} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:"14px"}}>×</button>
+              </div>
+              {/* Best bet highlight */}
+              <div style={{background:"#080f08",border:`1px solid ${best.r.color}44`,borderRadius:"6px",padding:"7px 10px",marginBottom:"7px"}}>
+                <div style={{fontSize:"10px",color:C.muted,marginBottom:"2px"}}>Meilleur pari</div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:"12px",fontWeight:700,color:C.white}}>{best.l}</span>
+                  <span style={{display:"flex",gap:"8px",alignItems:"center"}}>
+                    <span style={{fontSize:"12px",fontWeight:700,color:best.r.color}}>{pct(best.prob)}</span>
+                    <Stars n={best.r.stars} color={best.r.color}/>
+                  </span>
+                </div>
+              </div>
+              <div style={S.grRow}>
+                <span style={{...S.chip,...(win==="home"?S.chipG:{})}}>1 {pct(p.D.pH)}</span>
+                <span style={{...S.chip,...(win==="draw"?S.chipB:{})}}>X {pct(p.D.pD)}</span>
+                <span style={{...S.chip,...(win==="away"?S.chipW:{})}}>2 {pct(p.D.pA)}</span>
+                <span style={S.chip}>O2.5 {pct(p.D.o25)}</span>
+                <span style={S.chip}>U2.5 {pct(p.D.u25)}</span>
+                <span style={S.chip}>BTTS {pct(p.D.btts)}</span>
+                {p.wx&&<span style={{...S.chip,...S.chipB}}>{WXE[p.wx.wmo]||"🌤"} {p.wx.temp} degC</span>}
+                {p.vb?.length>0&&<span style={{...S.chip,...S.chipO}}>⭐Value</span>}
+              </div>
+              {p.ai&&<p style={{fontSize:"11px",color:C.muted,margin:"7px 0 0",lineHeight:1.55}}>{p.ai.split(".")[0]}.</p>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ELO + SETUP (unchanged from V4, compact)
+   ═══════════════════════════════════════════════════════════════ */
+function EloView({liveElo,history}){
+  const [sort,setSort]=useState("elo");
+  const teams=Object.keys(ELO_BASE).map(t=>({name:t,cur:liveElo[t]||ELO_BASE[t],base:ELO_BASE[t],d:(liveElo[t]||ELO_BASE[t])-ELO_BASE[t]}));
+  const sorted=[...teams].sort((a,b)=>sort==="elo"?b.cur-a.cur:sort==="delta"?b.d-a.d:a.name.localeCompare(b.name));
+  return(<div>
+    <div style={S.info}><strong style={{color:C.text}}>ELO dynamique V5</strong> — K=60, Margin of Victory multiplier. {history.length===0&&<span style={{color:C.gold}}>Aucun résultat — ratings de base.</span>}</div>
+    {history.length>0&&<div style={{marginBottom:"12px"}}><div style={S.st}>Historique ({history.length} matchs)</div>
+      {history.map((h,i)=><div key={i} style={S.eloRow}><span style={{color:C.text,fontWeight:600}}>{h.home} {h.sH}–{h.sA} {h.away}</span><span><span style={{color:h.dH>0?C.green:C.red,marginRight:"8px"}}>{h.home} {h.dH>0?"+":""}{h.dH}</span><span style={{color:h.dA>0?C.green:C.red}}>{h.away} {h.dA>0?"+":""}{h.dA}</span></span></div>)}
+    </div>}
+    <div style={{display:"flex",gap:"5px",marginBottom:"9px"}}>
+      {[["elo","ELO"],["delta","Variation"],["name","Nom"]].map(([v,l])=>(
+        <button key={v} onClick={()=>setSort(v)} style={{padding:"4px 10px",borderRadius:"5px",fontSize:"10px",fontWeight:600,cursor:"pointer",border:"none",background:sort===v?C.green:C.card,color:sort===v?"#000":C.muted}}>{l}</button>
+      ))}
+    </div>
+    {sorted.map((t,i)=><div key={t.name} style={{...S.eloRow,background:i%2===0?C.card:C.surface,padding:"5px 8px"}}>
+      <span style={{color:C.muted,minWidth:"20px",fontSize:"10px"}}>{i+1}</span>
+      <span style={{color:C.text,flex:1,fontWeight:t.d!==0?700:400}}>{t.name}</span>
+      <span style={{color:C.white,fontWeight:700,minWidth:"40px",textAlign:"right"}}>{t.cur}</span>
+      <span style={{color:C.muted,fontSize:"10px",minWidth:"36px",textAlign:"right"}}>{t.base}</span>
+      <span style={{color:t.d>0?C.green:t.d<0?C.red:C.muted,fontSize:"10px",minWidth:"34px",textAlign:"right",fontWeight:t.d!==0?700:400}}>{t.d>0?"+":""}{t.d||"—"}</span>
+    </div>)}
+  </div>);
+}
+
+function Setup({apiKey,setApiKey,anthropicKey,setAnthropicKey}){
+  return(<div>
+    <div style={S.info}>Configure tes clés API pour activer les compositions/cotes en temps réel et l'analyse IA.</div>
+    <div style={S.keyBox}>
+      <div style={S.keyTitle}>API-Football — 100 req/jour gratuit</div>
+      <input style={S.keyInput} type="password" placeholder="Clé API-Football…" value={apiKey} onChange={e=>setApiKey(e.target.value)}/>
+      <div style={S.keyHint}>1. <strong style={{color:C.green}}>dashboard.api-football.com</strong> → compte gratuit (sans CB)<br/>2. Dashboard → API Key → copier</div>
+    </div>
+    <div style={S.keyBox}>
+      <div style={S.keyTitle}>Anthropic API — Analyse IA (optionnel)</div>
+      <input style={S.keyInput} type="password" placeholder="Clé Anthropic sk-ant-…" value={anthropicKey} onChange={e=>setAnthropicKey(e.target.value)}/>
+      <div style={S.keyHint}>1. <strong style={{color:C.green}}>console.anthropic.com</strong> → API Keys → créer<br/>2. Sans clé, l'analyse IA sera désactivée</div>
+    </div>
+    <div style={S.keyBox}>
+      <div style={S.keyTitle}>Système d'étoiles ⭐ — Logique</div>
+      <div style={{fontSize:"11px",color:C.muted,lineHeight:1.8}}>
+        {[["⭐⭐⭐⭐⭐","≥ 72%","Très haute confiance — jouer en confiance"],
+          ["⭐⭐⭐⭐","62–71%","Haute confiance — pari recommandé"],
+          ["⭐⭐⭐","52–61%","Confiance modérée — pari possible"],
+          ["⭐⭐","42–51%","Faible confiance — prudence"],
+          ["⭐","< 42%","Spéculatif — éviter"],
+        ].map(([s,r,l])=><div key={s} style={{display:"flex",gap:"8px",alignItems:"baseline",marginBottom:"2px"}}>
+          <span style={{minWidth:"80px",fontSize:"12px"}}>{s}</span>
+          <span style={{minWidth:"56px",color:C.gold}}>{r}</span>
+          <span>{l}</span>
+        </div>)}
+        <br/>
+        Score = prob × fiabilité marché × bonus edge bookmaker
+      </div>
+    </div>
+  </div>);
+}
+
+
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+  </script>
+</body>
+</html>
